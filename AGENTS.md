@@ -3,15 +3,15 @@
 작업 전에 [공통 지침](../AGENTS.md), [프로젝트 맥락](../docs/PROJECT_CONTEXT.md),
 [프로젝트 구조](../docs/PROJECT_STRUCTURE.md)를 읽는다. 개발 문서는 루트 `docs/`에 별도로 유지하며 두 서버 저장소의 추적 범위 밖이다.
 단독 체크아웃의 도구 설정·서버 개요는 [README.md](README.md)를 기준으로 한다.
-현재 개발 환경과 상태 확인 API만 구현되어 있고 업무 기능은 구현 전이다.
+현재 통화 실행·웹훅·음성 스트림·도구·후처리/RAG를 구현하고 fake로 검증했다. [통화 구현 기록](../docs/implementation-plan/CALL_IMPLEMENTATION.md)을 확인한다. 실제 발신·유료 모델 검증은 남아 있다.
 ORM은 SQLAlchemy를 사용하고 공유 DB 변경은 siniear-service의 Alembic 이력으로 관리한다. T에 별도 마이그레이션을 만들지 않는다.
 업무 DB 작업 전 완성된 [ERD 원본](../docs/ERD.md), [그림](../docs/ERD.html),
 [테이블·컬럼 설명](../docs/ERD_DICTIONARY.md)과 [DB 정의·물리 설계 보완안](../docs/MVP_DB_SCHEMA.md)을 읽는다.
-업무 ERD는 16개 테이블·116개 컬럼 기준이다. C의 Group/Meeting·커뮤니티 구현으로 회원 기반·그룹·일정·신청·게시글·댓글 9개 업무 테이블과 운영 저장소 2개를 로컬 DB에 적용했다.
+업무 ERD는 16개 테이블·116개 컬럼 기준이다. 공유 업무 16개 테이블과 운영 저장소 6개를 로컬 DB에 적용했다.
 커뮤니티는 C 소유이며 [구현 기록](../docs/COMMUNITY_IMPLEMENTATION.md)을 따른다. T에는 커뮤니티 읽기·쓰기 코드가 없다.
-T 소유 통화 테이블·업무 매핑은 아직 없다. [적용 범위](../docs/GROUP_MEETING_IMPLEMENTATION.md)를 확인하고 공유 마이그레이션을 C에서만 확장한다.
+T에 통화·원문·운영 작업 매핑을 추가했다. [적용 범위](../docs/GROUP_MEETING_IMPLEMENTATION.md)를 확인하고 공유 마이그레이션을 C에서만 확장한다.
 calls의 embedding·embedding_model_id·embedding_source_hash는 T가 함께 저장하고 요약 변경·삭제 시 함께 비운다.
-임베딩은 gemini-embedding-001·768차원으로 확정했다. 요약 RETRIEVAL_DOCUMENT/질문 RETRIEVAL_QUERY, L2 정규화·코사인 유사도를 사용하며 T 설정으로 관리한다. 물리 타입은 미정이다.
+임베딩은 gemini-embedding-001·768차원으로 확정했다. 요약 RETRIEVAL_DOCUMENT/질문 RETRIEVAL_QUERY, L2 정규화·코사인 유사도를 사용하며 T 설정으로 관리한다. 현재 물리 타입은 double precision[]이며 검색 임계값은 품질 평가 전 구현값이다.
 ERD에 남은 미결정 정책과 조건부·운영 저장소 제안은 별도로 확인한다.
 
 ## 개발·검증 명령
@@ -23,17 +23,17 @@ ERD에 남은 미결정 정책과 조건부·운영 저장소 제안은 별도�
 docker compose up --build --detach --wait --wait-timeout 120
 docker compose exec call ruff check .
 docker compose exec call ruff format --check .
-docker compose exec call pytest
+docker compose exec -e RUN_DB_TESTS=1 call pytest
 ```
 
 Python 3.12와 uv 0.13.8을 사용한다. 의존성 변경 시 이 저장소의 `pyproject.toml`과 `uv.lock`을
 함께 갱신하고 재빌드한다. 호스트 검사와 이미지 빌드 방법은 README에 있다.
-Twilio/Gemini 설정과 SDK, 실시간 음성, RAG, 운영 배포는 아직 구성되지 않았다.
+한국AI통신 발신 API·Gemini SDK·실시간 음성·RAG를 구현했다. 기본 공급자는 disabled이며 실제 음성·검색 품질·운영 배포는 미검증이다. 설정과 CI의 C 소스 의존성은 README를 따른다.
 
 ## 책임과 경계
 
-- C의 발신·비상전화 실행 요청, Twilio voice/status 웹훅 및 양방향 음성 스트림을 처리한다.
-- Twilio–Gemini Live 세션, 음성 변환, 문맥 준비, 과거 대화 검색, 원문·상태 저장,
+- C의 발신·비상전화 실행 요청, 한국AI통신 voice/status 웹훅 및 양방향 음성 스트림을 처리한다.
+- 한국AI통신–Gemini Live 세션, 음성 변환, 문맥 준비, 과거 대화 검색, 원문·상태 저장,
   통화 후 요약·임베딩·색인을 담당한다.
 - 모임 검색·신청·내 신청 조회·취소는 C 내부 API로 요청한다. C의 모임·신청 테이블을 직접 변경하지 않는다.
 - 미응답 판단·연락 대상 선정은 C의 책임이다. 대화 내용 기반 위험 탐지나 위험 도구를 추가하지 않는다.
@@ -44,7 +44,7 @@ API 명세서 2.2절·5절·6절의 설계안을 기준으로 한다.
 
 - C의 실행 요청을 인증하고 저장된 통화와 회원 연결을 검증한다.
   C가 준 최소 프로필에 해당 회원의 최근 요약을 DB에서 직접 조회해 문맥을 구성한다.
-- 공급자 서명과 메시지를 검증한다. 현재 통화 상태를 중복·역순 이벤트로 되돌리지 않는다.
+- HTTP 웹훅은 X-Signature를, WSS는 start의 통화별 토큰과 메시지를 검증한다. 현재 통화 상태를 중복·역순 이벤트로 되돌리지 않는다.
 - 같은 `call_id` 또는 `delivery_id`의 실행 재요청을 새 발신으로 처리하지 않는다.
   공급자 요청 결과가 불명확하면 기존 발신 여부를 확인한 뒤 복구한다.
 - 모델 도구에는 서버 세션의 `call_id`를 주입한다. 모델이 회원 ID·연락처·자격 증명을 정하지 못하게 한다.
